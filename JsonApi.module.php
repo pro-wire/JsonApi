@@ -33,9 +33,9 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 
 	public static function getModuleInfo(): array {
 		return [
-			'title'    => 'ProcessWire JSON API',
+			'title'    => 'JSON API',
 			'version'  => '1.0.0',
-			'summary'  => 'JSON REST API exposing pages, templates and fields. Auth delegated to session.',
+			'summary'  => 'ProcessWire JSON REST API exposing pages, templates and fields. Auth delegated to session.',
 			'author'   => 'Ivan Milincic',
 			'singular' => true,
 			'autoload' => true,
@@ -53,7 +53,8 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 	}
 
 	public function intercept(HookEvent $event): void {
-		$prefix = '/' . trim($this->get('apiPrefix') ?: 'pw-api', '/') . '/';
+		$prefix = '/' . trim($this->get('apiPrefix') ?: '/api/pw/', '/') . '/';
+		$prefix = str_replace('//', '/', $prefix); // just in case
 		$url    = wire('input')->url();
 
 		if (strpos($url, $prefix) !== 0) return;
@@ -701,8 +702,8 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$f->attr('name', 'apiPrefix');
 		$f->label       = 'API URL prefix';
 		$f->description = 'URL segment used for all routes.';
-		$f->notes       = 'e.g. "pw-api" → yoursite.com/pw-api/pages';
-		$f->value       = $data['apiPrefix'] ?? 'pw-api';
+		$f->notes       = 'e.g. "/api/pw/" → yoursite.com/api/pw/pages';
+		$f->value       = $data['apiPrefix'] ?? '/api/pw/';
 		$wrap->add($f);
 
 		$f = $modules->get('InputfieldCheckbox');

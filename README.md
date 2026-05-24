@@ -25,7 +25,7 @@ Lean JSON REST API for ProcessWire that exposes core CMS data — pages, templat
 
 | Setting | Description | Default |
 |---|---|---|
-| **API URL prefix** | URL segment for all routes | `pw-api` |
+| **API URL prefix** | URL segment for all routes | `/api/pw/` |
 | **Allowed CORS origins** | One origin per line. `*` allows all | *(none)* |
 
 ---
@@ -51,41 +51,41 @@ All endpoints return JSON. All require a valid PW session (HTTP 401 otherwise).
 ### Pages
 
 ```
-GET  /pw-api/pages
-GET  /pw-api/pages?template=blog-post&parent=/blog/&limit=25&start=0&sort=-modified
-GET  /pw-api/pages?selector=template=blog-post, created>2024-01-01, sort=-created
+GET  /api/pw/pages
+GET  /api/pw/pages?template=blog-post&parent=/blog/&limit=25&start=0&sort=-modified
+GET  /api/pw/pages?selector=template=blog-post, created>2024-01-01, sort=-created
 
-GET  /pw-api/pages/{id}
-GET  /pw-api/pages/{id}?schema=1    ← includes field schema for edit form rendering
+GET  /api/pw/pages/{id}
+GET  /api/pw/pages/{id}?schema=1    ← includes field schema for edit form rendering
 
-POST /pw-api/pages/{id}             ← save fields (only fields the session user can edit)
+POST /api/pw/pages/{id}             ← save fields (only fields the session user can edit)
 Body: { "title": "New title", "body": "<p>…</p>", "tags": [1, 2] }
 
-POST /pw-api/pages/new              ← create page
+POST /api/pw/pages/new              ← create page
 Body: { "template": "blog-post", "parent": "/blog/", "title": "My Post", "body": "…" }
 
-DELETE /pw-api/pages/{id}           ← moves to trash (deleteable() check)
+DELETE /api/pw/pages/{id}           ← moves to trash (deleteable() check)
 ```
 
 ### Templates
 
 ```
-GET /pw-api/templates               ← list all non-system templates
-GET /pw-api/templates/{name}        ← full detail + field schema
+GET /api/pw/templates               ← list all non-system templates
+GET /api/pw/templates/{name}        ← full detail + field schema
 ```
 
 ### Fields
 
 ```
-GET /pw-api/fields                  ← list all non-system fields
-GET /pw-api/fields/{name}           ← full field detail
+GET /api/pw/fields                  ← list all non-system fields
+GET /api/pw/fields/{name}           ← full field detail
 ```
 
 ---
 
 ## Schema format
 
-`GET /pw-api/templates/blog-post` returns:
+`GET /api/pw/templates/blog-post` returns:
 
 ```json
 {
@@ -170,13 +170,13 @@ Fields the session user can't edit are silently skipped on POST and included in 
 
 ```js
 // Get a page with its field schema for an edit form
-const res = await fetch('/pw-api/pages/1042?schema=1', {
+const res = await fetch('/api/pw/pages/1042?schema=1', {
   credentials: 'include', // sends the PW session cookie
 });
 const { page } = await res.json();
 
 // Save changes
-await fetch('/pw-api/pages/1042', {
+await fetch('/api/pw/pages/1042', {
   method: 'POST',
   credentials: 'include',
   headers: { 'Content-Type': 'application/json' },
@@ -184,7 +184,7 @@ await fetch('/pw-api/pages/1042', {
 });
 
 // Create a page
-await fetch('/pw-api/pages/new', {
+await fetch('/api/pw/pages/new', {
   method: 'POST',
   credentials: 'include',
   headers: { 'Content-Type': 'application/json' },
@@ -197,7 +197,7 @@ await fetch('/pw-api/pages/new', {
 });
 
 // Full template schema (for a create form)
-const { template } = await fetch('/pw-api/templates/blog-post', {
+const { template } = await fetch('/api/pw/templates/blog-post', {
   credentials: 'include',
 }).then(r => r.json());
 

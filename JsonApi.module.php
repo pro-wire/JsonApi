@@ -12,17 +12,17 @@ namespace ProcessWire;
  *
  * Endpoints
  * ─────────────────────────────────────────────────────────────────────
- *   GET  /pw-api/pages                     list pages (filterable)
- *   GET  /pw-api/pages/{id|name|path}      single page + field values
- *   POST /pw-api/pages/{id}                save field values (ACL enforced)
- *   POST /pw-api/pages/new                 create a page
- *   DELETE /pw-api/pages/{id}              trash a page
+ *   GET  /api/pw/pages                     list pages (filterable)
+ *   GET  /api/pw/pages/{id|name|path}      single page + field values
+ *   POST /api/pw/pages/{id}                save field values (ACL enforced)
+ *   POST /api/pw/pages/new                 create a page
+ *   DELETE /api/pw/pages/{id}              trash a page
  *
- *   GET  /pw-api/templates                 list all templates
- *   GET  /pw-api/templates/{name}          template detail + full field schema
+ *   GET  /api/pw/templates                 list all templates
+ *   GET  /api/pw/templates/{name}          template detail + full field schema
  *
- *   GET  /pw-api/fields                    list all fields
- *   GET  /pw-api/fields/{name}             single field detail
+ *   GET  /api/pw/fields                    list all fields
+ *   GET  /api/pw/fields/{name}             single field detail
  *
  *
  * 
@@ -34,13 +34,20 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 	public static function getModuleInfo(): array {
 		return [
 			'title'    => 'JSON API',
-			'version'  => '1.0.0',
+			'version'  => 200,
 			'summary'  => 'ProcessWire JSON REST API exposing pages, templates and fields. Auth delegated to session.',
 			'author'   => 'Ivan Milincic',
 			'singular' => true,
 			'autoload' => true,
 			'icon'     => 'code-fork',
-			'requires' => ['ProcessWire>=3.0.164'],
+			'requires' => ['ProcessWire>=3.0.164', 'Auth'],
+		];
+	}
+
+	public static function getDefaultData(): array {
+		return [
+			'apiPrefix'    => '/api/pw/',
+			'requireLogin' => 1,
 		];
 	}
 
@@ -57,20 +64,30 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$prefix = str_replace('//', '/', $prefix); // just in case
 		$url    = wire('input')->url();
 
-		if (strpos($url, $prefix) !== 0) return;
+		if (!str_starts_with($url, $prefix)) return;
 
 		// Take over rendering
 		$event->replace = true;
 		$event->return  = '';
 
-		$this->sendCorsHeaders();
+		/** @var Auth $auth */
+		$auth = wire('modules')->get('Auth');
+		$auth->sendCorsHeaders();
 
+		// OPTIONS preflight must be handled before any auth check —
+		// browsers send preflights without credentials.
 		if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 			http_response_code(204);
 			exit;
 		}
 
 		header('Content-Type: application/json; charset=utf-8');
+
+		// API key check — controlled by Auth module config.
+		if ($auth->requiresApiKey() && !$auth->validateApiKey()) {
+			$this->respond(401, ['error' => 'Invalid or missing API key']);
+			exit;
+		}
 
 		// Session check — skipped when "requireLogin" is disabled in module config
 		if ($this->get('requireLogin') && !wire('user')->isLoggedin()) {
@@ -128,7 +145,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		};
 	}
 
-	/** GET /pw-api/pages[?template=&parent=&limit=&start=&sort=&selector=] */
+	/** GET /api/pw/pages[?template=&parent=&limit=&start=&sort=&selector=] */
 	private function pageList(): void {
 		$get = wire('input')->get;
 		$san = wire('sanitizer');
@@ -155,7 +172,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 
 			$sel = "limit=$limit, start=$start, sort=$sort, status<" . Page::statusTrash . $adminExclude . ", name!={$excludedPageNames}";
 			if ($template) $sel .= ", template=$template";
-			if ($parent)   $sel .= ", has_parent=$parent";
+			if ($parent)   $sel .= ', has_parent=' . $san->selectorValue($parent);
 
 			$pages = wire('pages')->find($sel);
 		}
@@ -168,7 +185,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		]);
 	}
 
-	/** GET /pw-api/pages/{id|name|path}[?schema=1] */
+	/** GET /api/pw/pages/{id|name|path}[?schema=1] */
 	private function pageGet(string $id): void {
 		$page = $this->resolvePage($id);
 
@@ -186,7 +203,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$this->respond(200, ['page' => $data]);
 	}
 
-	/** POST /pw-api/pages/{id}  body: { field: value, ... } */
+	/** POST /api/pw/pages/{id}  body: { field: value, ... } */
 	private function pageSave(string $id): void {
 		$page = $this->resolvePage($id);
 
@@ -201,31 +218,35 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$saved   = [];
 		$skipped = [];
 
-		foreach ($body as $key => $value) {
-			// Immutable / meta keys
-			if (in_array($key, ['id', 'name', 'path', 'url', 'template', 'created', 'modified', 'status', 'schema'])) {
-				$skipped[] = $key;
-				continue;
+		try {
+			foreach ($body as $key => $value) {
+				// Immutable / meta keys
+				if (in_array($key, ['id', 'name', 'path', 'url', 'template', 'created', 'modified', 'status', 'schema'])) {
+					$skipped[] = $key;
+					continue;
+				}
+
+				$field = wire('fields')->get(wire('sanitizer')->fieldName($key));
+				if (!$field || !$page->template->hasField($field)) {
+					$skipped[] = $key;
+					continue;
+				}
+				if (!$page->editable($field)) {
+					$skipped[] = $key;
+					continue;
+				}
+
+				$page->set($key, $this->coerceInput($field, $value));
+				$saved[] = $key;
 			}
 
-			$field = wire('fields')->get(wire('sanitizer')->fieldName($key));
-			if (!$field || !$page->template->hasField($field)) {
-				$skipped[] = $key;
-				continue;
-			}
-			if (!$page->editable($field)) {
-				$skipped[] = $key;
-				continue;
-			}
+			if (empty($saved)) throw new ProcessWireJsonApiException('No editable fields in body', 400);
 
-			$page->set($key, $this->coerceInput($field, $value));
-			$saved[] = $key;
+			$page->save();
+		} finally {
+			// Restore output formatting regardless of success or exception.
+			$page->of($of);
 		}
-
-		if (empty($saved)) throw new ProcessWireJsonApiException('No editable fields in body', 400);
-
-		$page->save($saved);
-		$page->of($of);
 
 		$this->respond(200, [
 			'page'    => $this->formatPageFull($page),
@@ -234,7 +255,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		]);
 	}
 
-	/** POST /pw-api/pages/new  body: { template, parent, name?, title, ...fields } */
+	/** POST /api/pw/pages/new  body: { template, parent, name?, title, ...fields } */
 	private function pageCreate(): void {
 		$body = $this->jsonBody();
 		$san  = wire('sanitizer');
@@ -257,7 +278,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 
 		if (!$parent->addable($template)) throw new ProcessWireJsonApiException('Not allowed to add pages here', 403);
 
-		$page = new Page($template);
+		$page = wire(new Page($template));
 		$page->parent = $parent;
 		$page->title  = $title;
 		$page->name   = $name ?: $san->pageName($title);
@@ -275,11 +296,11 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$this->respond(201, ['page' => $this->formatPageFull($page)]);
 	}
 
-	/** DELETE /pw-api/pages/{id} — moves to trash */
+	/** DELETE /api/pw/pages/{id} — moves to trash */
 	private function pageDelete(string $id): void {
 		$page = $this->resolvePage($id);
 
-		if (!$page->deleteable()) throw new ProcessWireJsonApiException('Access denied', 403);
+		if (!$page->trashable()) throw new ProcessWireJsonApiException('Access denied', 403);
 
 		wire('pages')->trash($page);
 
@@ -295,7 +316,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$id ? $this->templateGet($id) : $this->templateList();
 	}
 
-	/** GET /pw-api/templates */
+	/** GET /api/pw/templates */
 	private function templateList(): void {
 		$out = [];
 		foreach (wire('templates') as $t) {
@@ -305,7 +326,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$this->respond(200, ['items' => $out, 'total' => count($out)]);
 	}
 
-	/** GET /pw-api/templates/{name} — full schema including all fields */
+	/** GET /api/pw/templates/{name} — full schema including all fields */
 	private function templateGet(string $name): void {
 		$template = wire('templates')->get(wire('sanitizer')->pageName($name));
 		if (!$template) throw new ProcessWireJsonApiException("Template '$name' not found", 404);
@@ -324,7 +345,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$id ? $this->fieldGet($id) : $this->fieldList();
 	}
 
-	/** GET /pw-api/fields */
+	/** GET /api/pw/fields */
 	private function fieldList(): void {
 		$out = [];
 		foreach (wire('fields') as $f) {
@@ -334,7 +355,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$this->respond(200, ['items' => $out, 'total' => count($out)]);
 	}
 
-	/** GET /pw-api/fields/{name} */
+	/** GET /api/pw/fields/{name} */
 	private function fieldGet(string $name): void {
 		$field = wire('fields')->get(wire('sanitizer')->fieldName($name));
 		if (!$field) throw new ProcessWireJsonApiException("Field '$name' not found", 404);
@@ -386,6 +407,11 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$type  = $field->type->className();
 
 		return match (true) {
+			// Repeaters — must precede the generic PageArray arm because
+			// RepeaterPageArray extends PageArray; match() stops at first match.
+			$value instanceof PageArray && str_starts_with($type, 'FieldtypeRepeater')
+			=> $value->each(fn($rp) => $this->formatPageFull($rp)),
+
 			// Page references
 			$value instanceof PageArray => $value->each(fn($p) => [
 				'id' => $p->id,
@@ -407,10 +433,6 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 			// Files
 			$value instanceof Pagefiles => $value->each(fn($f) => $this->formatFile($f)),
 			$value instanceof Pagefile  => $this->formatFile($value),
-
-			// Repeaters — recurse
-			$value instanceof PageArray && str_starts_with($type, 'FieldtypeRepeater')
-			=> $value->each(fn($rp) => $this->formatPageFull($rp)),
 
 			// Options
 			$value instanceof SelectableOptionArray
@@ -527,11 +549,11 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 			'notes'       => ($ctx?->notes ?: $f->notes) ?: '',
 			'type'        => $type,
 			'inputfield'  => $f->get('inputfieldClass') ?: '',
-			'required'    => (bool)(($ctx?->required) ?: $f->required),
+			'required'    => (bool)(($ctx?->required) ?? $f->required),
 			'collapsed'   => (int)(($ctx?->collapsed) ?? $f->collapsed),
 			'columnWidth' => (int)(($ctx?->columnWidth) ?: ($f->columnWidth ?: 100)),
-			'showIf'      => ($ctx?->showIf ?: $f->showIf) ?: '',
-			'requiredIf'  => ($ctx?->requiredIf ?: $f->requiredIf) ?: '',
+			'showIf'      => ($ctx?->showIf ?? $f->showIf) ?: '',
+			'requiredIf'  => ($ctx?->requiredIf ?? $f->requiredIf) ?: '',
 			'flags'       => $f->flags,
 		];
 
@@ -666,23 +688,6 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		return is_array($data) ? $data : [];
 	}
 
-	private function sendCorsHeaders(): void {
-		$allowed = array_filter(array_map('trim', explode("\n", $this->get('allowedOrigins') ?? '')));
-		$origin  = $_SERVER['HTTP_ORIGIN'] ?? '';
-
-		if (in_array('*', $allowed)) {
-			header('Access-Control-Allow-Origin: *');
-		} elseif ($origin && in_array($origin, $allowed)) {
-			header("Access-Control-Allow-Origin: $origin");
-			header('Vary: Origin');
-		}
-
-		header('Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS');
-		header('Access-Control-Allow-Headers: Content-Type, X-Requested-With, Authorization');
-		header('Access-Control-Allow-Credentials: true');
-		header('Access-Control-Max-Age: 86400');
-	}
-
 	private function respond(int $status, array $data): void {
 		// Discard any output buffers (e.g. Tracy Debugger) that would append HTML to our JSON response
 		while (ob_get_level()) ob_end_clean();
@@ -714,13 +719,9 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$f->value       = 1;
 		$wrap->add($f);
 
-		$f = $modules->get('InputfieldTextarea');
-		$f->attr('name', 'allowedOrigins');
-		$f->label       = 'Allowed CORS origins';
-		$f->description = 'One origin per line. Use * to allow all (not recommended in production).';
-		$f->notes       = "https://myastrosite.com\nhttps://my-react-app.vercel.app";
-		$f->value       = $data['allowedOrigins'] ?? '';
-		$f->rows        = 5;
+		$f = $modules->get('InputfieldMarkup');
+		$f->label = 'CORS & API Key Auth';
+		$f->value = '<p>CORS settings and API key authentication are configured in the <strong>Auth</strong> module.</p>';
 		$wrap->add($f);
 
 		return $wrap;

@@ -17,16 +17,20 @@ Lean JSON REST API for ProcessWire that exposes core CMS data — pages, templat
 
 1. Copy the `JsonApi/` folder into `site/modules/`
 2. Admin → Modules → Refresh → install **JsonApi**
-3. Set your allowed CORS origins in the module config
+3. Install and configure the **Auth** module (required dependency — handles CORS and API key auth)
 
 ---
 
 ## Configuration
 
+JsonApi has two settings. Everything else (CORS, API key auth) is configured in the **Auth** module.
+
 | Setting | Description | Default |
 |---|---|---|
 | **API URL prefix** | URL segment for all routes | `/api/pw/` |
-| **Allowed CORS origins** | One origin per line. `*` allows all | *(none)* |
+| **Require Login** | When enabled, all endpoints return 401 for unauthenticated requests | enabled |
+
+> CORS origins, methods, headers, credentials, and API key authentication are all configured in **Admin → Modules → Auth**.
 
 ---
 
@@ -204,4 +208,4 @@ const { template } = await fetch('/api/pw/templates/blog-post', {
 // template.schema → array of field descriptors, ready to drive a form renderer
 ```
 
-For cross-domain setups (Astro/React on a different server), your existing auth module handles login and sets the session cookie. Make sure it sets `SameSite=None; Secure` on the session cookie so cross-origin requests carry it, and add the front-end origin to the CORS allowed list in this module's config.
+For cross-domain setups (Astro/React on a different server), your existing auth module handles login and sets the session cookie. Make sure it sets `SameSite=None; Secure` on the session cookie so cross-origin requests carry it, and add the front-end origin to the CORS allowed list in the **Auth module's config**.

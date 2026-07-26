@@ -200,7 +200,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 			$data['schema'] = $this->schemaForTemplate($page->template);
 		}
 
-		$this->respond(200, ['page' => $data]);
+		$this->respond(200, $data);
 	}
 
 	/** POST /api/pw/pages/{id}  body: { field: value, ... } */
@@ -323,7 +323,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 			if ($t->flags & Template::flagSystem) continue;
 			$out[] = $this->formatTemplateBrief($t);
 		}
-		$this->respond(200, ['items' => $out, 'total' => count($out)]);
+		$this->respond(200, ['total' => count($out), 'items' => $out]);
 	}
 
 	/** GET /api/pw/templates/{name} — full schema including all fields */
@@ -331,9 +331,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 		$template = wire('templates')->get(wire('sanitizer')->pageName($name));
 		if (!$template) throw new ProcessWireJsonApiException("Template '$name' not found", 404);
 
-		$this->respond(200, [
-			'template' => $this->formatTemplateFull($template),
-		]);
+		$this->respond(200, $this->formatTemplateFull($template));
 	}
 
 	// ─────────────────────────────────────────────────────────────────
@@ -352,14 +350,14 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 			if ($f->flags & Field::flagSystem) continue;
 			$out[] = $this->formatFieldBrief($f);
 		}
-		$this->respond(200, ['items' => $out, 'total' => count($out)]);
+		$this->respond(200, ['total' => count($out), 'items' => $out]);
 	}
 
 	/** GET /api/pw/fields/{name} */
 	private function fieldGet(string $name): void {
 		$field = wire('fields')->get(wire('sanitizer')->fieldName($name));
 		if (!$field) throw new ProcessWireJsonApiException("Field '$name' not found", 404);
-		$this->respond(200, ['field' => $this->formatFieldFull($field)]);
+		$this->respond(200, $this->formatFieldFull($field));
 	}
 
 	// ─────────────────────────────────────────────────────────────────
@@ -403,51 +401,73 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 	// ─────────────────────────────────────────────────────────────────
 
 	private function formatFieldValue(Page $page, Field $field): mixed {
-		$value = $page->getFormatted($field->name);
-		$type  = $field->type->className();
+		$type = $field->type->className();
+
+		// For repeater fields use the unformatted value to guarantee we receive a
+		// RepeaterPageArray regardless of any output-formatting hooks.
+		$value = str_starts_with($type, 'FieldtypeRepeater')
+			? $page->getUnformatted($field->name)
+			: $page->getFormatted($field->name);
+
+		// IMPORTANT: WireArray::each() only collects *string* return values —
+		// when the callback returns an array, each() returns $this (the WireArray
+		// itself), which json_encode serialises as {}.  Use explicit iteration
+		// everywhere so the result is always a plain, sequentially-indexed PHP array.
 
 		return match (true) {
 			// Repeaters — must precede the generic PageArray arm because
 			// RepeaterPageArray extends PageArray; match() stops at first match.
 			$value instanceof PageArray && str_starts_with($type, 'FieldtypeRepeater')
-			=> $value->each(fn($rp) => $this->formatPageFull($rp)),
+			=> $this->iterateWireArray($value, fn($rp) => $this->formatPageFull($rp)),
 
 			// Page references
-			$value instanceof PageArray => $value->each(fn($p) => [
-				'id' => $p->id,
-				'name' => $p->name,
+			$value instanceof PageArray => $this->iterateWireArray($value, fn($p) => [
+				'id'    => $p->id,
+				'name'  => $p->name,
 				'title' => $p->title,
-				'url' => $p->url,
+				'url'   => $p->url,
 			]),
 			$value instanceof Page && $value->id > 0 => [
-				'id' => $value->id,
-				'name' => $value->name,
+				'id'    => $value->id,
+				'name'  => $value->name,
 				'title' => $value->title,
-				'url' => $value->url,
+				'url'   => $value->url,
 			],
 
 			// Images
-			$value instanceof Pageimages => $value->each(fn($img) => $this->formatImage($img)),
+			$value instanceof Pageimages => $this->iterateWireArray($value, fn($img) => $this->formatImage($img)),
 			$value instanceof Pageimage  => $this->formatImage($value),
 
 			// Files
-			$value instanceof Pagefiles => $value->each(fn($f) => $this->formatFile($f)),
+			$value instanceof Pagefiles => $this->iterateWireArray($value, fn($f) => $this->formatFile($f)),
 			$value instanceof Pagefile  => $this->formatFile($value),
 
 			// Options
 			$value instanceof SelectableOptionArray
-			=> $value->each(fn($o) => ['id' => $o->id, 'title' => (string)$o->title, 'value' => $o->value]),
+			=> $this->iterateWireArray($value, fn($o) => ['id' => $o->id, 'title' => (string)$o->title, 'value' => $o->value]),
 
 			// MapMarker
 			is_object($value) && method_exists($value, 'lat')
 			=> ['lat' => $value->lat, 'lng' => $value->lng, 'address' => $value->address ?? ''],
 
 			// WireArray catch-all
-			$value instanceof WireArray => $value->getArray(),
+			$value instanceof WireArray => array_values($value->getArray()),
 
 			// Scalar
 			default => $value,
 		};
+	}
+
+	/**
+	 * Iterate any WireArray with a callback and return a plain sequential PHP array.
+	 * This avoids WireArray::each() which only collects string return values.
+	 */
+	private function iterateWireArray(WireArray $items, callable $fn): array {
+		$result = [];
+		foreach ($items as $item) {
+			$result[] = $fn($item);
+		}
+		return $result;
 	}
 
 	private function formatImage(Pageimage $img): array {

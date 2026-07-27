@@ -418,7 +418,7 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 			// Repeaters — must precede the generic PageArray arm because
 			// RepeaterPageArray extends PageArray; match() stops at first match.
 			$value instanceof PageArray && str_starts_with($type, 'FieldtypeRepeater')
-			=> $this->iterateWireArray($value, fn($rp) => $this->formatPageFull($rp)),
+			=> $this->iterateWireArray($value, fn($rp) => $this->formatRepeaterItem($rp)),
 
 			// Page references
 			$value instanceof PageArray => $this->iterateWireArray($value, fn($p) => [
@@ -456,6 +456,26 @@ class JsonApi extends WireData implements Module, ConfigurableModule {
 			// Scalar
 			default => $value,
 		};
+	}
+
+	/**
+	 * Format a single repeater item page.
+	 *
+	 * Repeater items in ProcessWire are stored as child pages of an internal
+	 * holder at /processwire/repeaters/for-field-X/for-page-Y/, so their
+	 * $page->parent is always that system container — never the content page.
+	 * This method intentionally omits the misleading parent/url/path/status
+	 * meta and only serialises the actual sub-fields defined on the repeater.
+	 */
+	private function formatRepeaterItem(Page $item): array {
+		$data = ['id' => $item->id];
+		foreach ($item->template->fields as $field) {
+			// Skip ProcessWire's internal repeater system fields.
+			if ($field->flags & Field::flagSystem) continue;
+			if (str_starts_with($field->name, 'repeater_')) continue;
+			$data[$field->name] = $this->formatFieldValue($item, $field);
+		}
+		return $data;
 	}
 
 	/**
